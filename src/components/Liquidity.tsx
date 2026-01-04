@@ -2,16 +2,19 @@ import React, { useState } from 'react';
 import sdk from 'casper-js-sdk';
 import { useDex } from '../contexts/DexContext';
 import { useWallet } from '../hooks/useWallet';
+import { useToast } from '../contexts/ToastContext';
 
 const { Deploy } = (sdk as any).default ?? sdk;
 
 interface Props {
     wallet: ReturnType<typeof useWallet>;
     log: (msg: string) => void;
+    onSuccess?: () => void;
 }
 
-export const Liquidity: React.FC<Props> = ({ wallet, log }) => {
+export const Liquidity: React.FC<Props> = ({ wallet, log, onSuccess }) => {
     const { dex, config } = useDex();
+    const { showToast } = useToast();
     // Add Liquidity State
     const [amountA, setAmountA] = useState('100');
     const [amountB, setAmountB] = useState('100');

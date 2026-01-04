@@ -2,16 +2,24 @@ import React, { useState, useEffect } from 'react';
 import sdk from 'casper-js-sdk';
 import { useDex } from '../contexts/DexContext';
 import { useWallet } from '../hooks/useWallet';
+import { useToast } from '../contexts/ToastContext';
 
 const { Deploy } = (sdk as any).default ?? sdk;
 
 interface Props {
     wallet: ReturnType<typeof useWallet>;
     log: (msg: string) => void;
+    onSuccess?: () => void;
 }
 
-export const Swap: React.FC<Props> = ({ wallet, log }) => {
+export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
     const { dex, config } = useDex();
+    const { showToast, removeToast } = useToast();
+    
+    // Token selection
+    const [tokenIn, setTokenIn] = useState<'WCSPR' | 'ECTO'>('WCSPR');
+    const [tokenOut, setTokenOut] = useState<'WCSPR' | 'ECTO'>('ECTO');
+    
     const [amountIn, setAmountIn] = useState('10');
     const [loading, setLoading] = useState(false);
     const [reserves, setReserves] = useState<{r0: bigint, r1: bigint} | null>(null);
@@ -21,6 +29,20 @@ export const Swap: React.FC<Props> = ({ wallet, log }) => {
     const [expectedOutput, setExpectedOutput] = useState<string>('0');
     const [priceImpact, setPriceImpact] = useState<number>(0);
     const [minimumReceived, setMinimumReceived] = useState<string>('0');
+
+    // Swap token direction
+    const handleSwapDirection = () => {
+        setTokenIn(tokenOut);
+        setTokenOut(tokenIn);
+    };
+
+    // Prevent same token selection
+    useEffect(() => {
+        if (tokenIn === tokenOut) {
+            // Auto-swap to prevent same token
+            setTokenOut(tokenIn === 'WCSPR' ? 'ECTO' : 'WCSPR');
+        }
+    }, [tokenIn, tokenOut]);
 
     useEffect(() => {
         const fetchReserves = async () => {
@@ -40,7 +62,7 @@ export const Swap: React.FC<Props> = ({ wallet, log }) => {
        fetchReserves();
     }, [dex, config]);
 
-    // Calculate swap preview whenever input or reserves change
+    // Calculate swap preview whenever input, reserves, or token selection changes
     useEffect(() => {
         if (!reserves || !amountIn || parseFloat(amountIn) <= 0) {
             setExpectedOutput('0');
@@ -50,16 +72,22 @@ export const Swap: React.FC<Props> = ({ wallet, log }) => {
         }
 
         try {
-            const amountInBigInt = BigInt(Math.floor(parseFloat(amountIn) * 10**18));
+            const decIn = config.tokens[tokenIn].decimals;
+            const decOut = config.tokens[tokenOut].decimals;
+            const amountInBigInt = BigInt(Math.floor(parseFloat(amountIn) * (10 ** decIn)));
+            
+            // Determine correct reserve order based on token direction
+            // WCSPR is always reserve0, ECTO is always reserve1
+            const reserveIn = tokenIn === 'WCSPR' ? reserves.r0 : reserves.r1;
+            const reserveOut = tokenIn === 'WCSPR' ? reserves.r1 : reserves.r0;
             
             // Calculate expected output using AMM formula
-            const outputAmount = dex.getAmountOut(amountInBigInt, reserves.r0, reserves.r1);
-            const outputFormatted = (Number(outputAmount) / 10**18).toFixed(4);
+            const outputAmount = dex.getAmountOut(amountInBigInt, reserveIn, reserveOut);
+            const outputFormatted = (Number(outputAmount) / (10 ** decOut)).toFixed(4);
             setExpectedOutput(outputFormatted);
 
             // Calculate price impact
-            // Price impact = (1 - (outputAmount / (inputAmount * currentPrice))) * 100
-            const currentPrice = Number(reserves.r1) / Number(reserves.r0);
+            const currentPrice = Number(reserveOut) / Number(reserveIn);
             const expectedPrice = Number(outputAmount) / Number(amountInBigInt);
             const impact = ((currentPrice - expectedPrice) / currentPrice) * 100;
             setPriceImpact(impact);
@@ -71,30 +99,51 @@ export const Swap: React.FC<Props> = ({ wallet, log }) => {
         } catch (e) {
             console.error('Error calculating swap preview:', e);
         }
-    }, [amountIn, reserves, slippage, dex]);
+    }, [amountIn, reserves, slippage, tokenIn, tokenOut, dex, config]);
 
     const handleSwap = async () => {
-        if (!wallet.publicKey) return;
+        if (!wallet.publicKey) {
+            showToast('error', 'Please connect your wallet first');
+            return;
+        }
+
+        if (parseFloat(amountIn) <= 0) {
+            showToast('error', 'Please enter a valid amount');
+            return;
+        }
+
+        let pendingToastId: string | null = null;
         setLoading(true);
+        
         try {
-            const decIn = config.tokens.WCSPR.decimals;
-            const decOut = config.tokens.ECTO.decimals;
+            const decIn = config.tokens[tokenIn].decimals;
+            const decOut = config.tokens[tokenOut].decimals;
             const amtInBI = BigInt(Math.floor(parseFloat(amountIn) * (10 ** decIn)));
             const amtOutMinBI = BigInt(Math.floor(parseFloat(minimumReceived) * (10 ** decOut)));
 
-            log(`Swapping ${amountIn} WCSPR -> ${expectedOutput} ECTO (min: ${minimumReceived})...`);
+            log(`Swapping ${amountIn} ${tokenIn} -> ${expectedOutput} ${tokenOut} (min: ${minimumReceived})...`);
+            
             const deploy = dex.makeSwapExactTokensForTokensDeploy(
                 amtInBI,
                 amtOutMinBI,
-                [config.tokens.WCSPR.packageHash, config.tokens.ECTO.packageHash],
+                [config.tokens[tokenIn].packageHash, config.tokens[tokenOut].packageHash],
                 `account-hash-${wallet.publicKey.accountHash().toHex()}`,
                 Date.now() + 1800000,
                 wallet.publicKey
             );
 
-             log('Requesting signature...');
+            // Show pending toast for signing
+            pendingToastId = Date.now().toString();
+            showToast('pending', 'Please sign the transaction in your wallet...');
+            log('Requesting signature...');
+            
             const signature = await wallet.sign(deploy);
             log(`Signed! Signature: ${signature.slice(0, 20)}...`);
+
+            // Update toast for broadcasting
+            if (pendingToastId) removeToast(pendingToastId);
+            pendingToastId = (Date.now() + 1).toString();
+            showToast('pending', 'Broadcasting transaction to network...');
 
             // Use JSON payload
             const deployJson = Deploy.toJSON(deploy);
@@ -107,10 +156,35 @@ export const Swap: React.FC<Props> = ({ wallet, log }) => {
 
             log('Broadcasting JSON...');
             const txHash = await dex.sendDeployRaw(deployJson);
+            
+            // Remove pending toast and show success
+            if (pendingToastId) removeToast(pendingToastId);
+            showToast('success', `Swap submitted successfully!`, txHash);
             log(`Swap Sent! Hash: ${txHash}`);
+
+            // Refresh balances after successful swap
+            if (onSuccess) {
+                setTimeout(() => onSuccess(), 2000); // Wait 2s for network propagation
+            }
         } catch (e: any) {
-             log(`Error: ${e.message}`);
-             console.error(e);
+            // Remove pending toast
+            if (pendingToastId) removeToast(pendingToastId);
+            
+            // Show user-friendly error
+            let errorMessage = 'Transaction failed';
+            if (e.message?.includes('User rejected')) {
+                errorMessage = 'Transaction rejected by user';
+            } else if (e.message?.includes('insufficient')) {
+                errorMessage = 'Insufficient balance or allowance';
+            } else if (e.message?.includes('slippage')) {
+                errorMessage = 'Slippage tolerance exceeded';
+            } else if (e.message) {
+                errorMessage = e.message.slice(0, 100); // Truncate long errors
+            }
+            
+            showToast('error', errorMessage);
+            log(`Error: ${e.message}`);
+            console.error(e);
         } finally {
             setLoading(false);
         }
@@ -125,21 +199,74 @@ export const Swap: React.FC<Props> = ({ wallet, log }) => {
 
     return (
         <div className="card">
-            <h2>Swap WCSPR to ECTO</h2>
+            <h2>Swap Tokens</h2>
              {reserves && (
                 <div style={{fontSize: '0.8rem', marginBottom: '1rem', color: '#aaa'}}>
                     Pool: {(Number(reserves.r0) / 10**18).toFixed(2)} WCSPR / {(Number(reserves.r1) / 10**18).toFixed(2)} ECTO
                 </div>
             )}
             
+            {/* Input Token */}
             <div className="form-group">
-                <label>WCSPR Amount (In)</label>
-                <input 
-                    type="number" 
-                    value={amountIn} 
-                    onChange={e => setAmountIn(e.target.value)} 
-                    placeholder="0.0"
-                />
+                <label>From</label>
+                <div style={{display: 'flex', gap: '8px'}}>
+                    <select 
+                        value={tokenIn} 
+                        onChange={e => setTokenIn(e.target.value as 'WCSPR' | 'ECTO')}
+                        style={{flex: '0 0 100px'}}
+                    >
+                        <option value="WCSPR">WCSPR</option>
+                        <option value="ECTO">ECTO</option>
+                    </select>
+                    <input 
+                        type="number" 
+                        value={amountIn} 
+                        onChange={e => setAmountIn(e.target.value)} 
+                        placeholder="0.0"
+                        style={{flex: 1}}
+                    />
+                </div>
+            </div>
+
+            {/* Swap Direction Button */}
+            <div style={{textAlign: 'center', margin: '0.5rem 0'}}>
+                <button 
+                    onClick={handleSwapDirection}
+                    style={{
+                        background: 'none',
+                        border: '2px solid #555',
+                        borderRadius: '50%',
+                        width: '40px',
+                        height: '40px',
+                        cursor: 'pointer',
+                        fontSize: '20px'
+                    }}
+                    type="button"
+                >
+                    ⇅
+                </button>
+            </div>
+
+            {/* Output Token */}
+            <div className="form-group">
+                <label>To</label>
+                <div style={{display: 'flex', gap: '8px'}}>
+                    <select 
+                        value={tokenOut} 
+                        onChange={e => setTokenOut(e.target.value as 'WCSPR' | 'ECTO')}
+                        style={{flex: '0 0 100px'}}
+                    >
+                        <option value="WCSPR">WCSPR</option>
+                        <option value="ECTO">ECTO</option>
+                    </select>
+                    <input 
+                        type="text" 
+                        value={expectedOutput} 
+                        readOnly
+                        placeholder="0.0"
+                        style={{flex: 1, background: 'rgba(255,255,255,0.05)'}}
+                    />
+                </div>
             </div>
 
             {/* Swap Preview */}

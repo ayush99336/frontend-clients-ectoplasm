@@ -8,6 +8,7 @@ import { Approve } from './components/Approve';
 import { Liquidity } from './components/Liquidity';
 import { Swap } from './components/Swap';
 import { useDex } from './contexts/DexContext';
+import { ToastProvider } from './contexts/ToastContext';
 
 function App() {
   const wallet = useWallet();
@@ -56,31 +57,33 @@ function App() {
   }, [wallet.isConnected, wallet.activeKey, wallet.publicKey]);
 
   return (
-    <div className="app-container">
-      <Header wallet={wallet} />
-      
-      <main style={{ padding: '2rem' }}>
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-             <h3>CSPR: {balance} | WCSPR: {wcsprBalance} | ECTO: {ectoBalance}</h3>
-        </div>
+    <ToastProvider>
+      <div className="app-container">
+        <Header wallet={wallet} />
+        
+        <main style={{ padding: '2rem' }}>
+          <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
+               <h3>CSPR: {balance} | WCSPR: {wcsprBalance} | ECTO: {ectoBalance}</h3>
+          </div>
 
-        <div className="tabs">
-            <button className={activeTab === 'swap' ? 'active' : ''} onClick={() => setActiveTab('swap')}>Swap</button>
-            <button className={activeTab === 'approve' ? 'active' : ''} onClick={() => setActiveTab('approve')}>Approve</button>
-            <button className={activeTab === 'liquidity' ? 'active' : ''} onClick={() => setActiveTab('liquidity')}>Liquidity</button>
-            <button className={activeTab === 'mint' ? 'active' : ''} onClick={() => setActiveTab('mint')}>Mint (Test)</button>
-        </div>
+          <div className="tabs">
+              <button className={activeTab === 'swap' ? 'active' : ''} onClick={() => setActiveTab('swap')}>Swap</button>
+              <button className={activeTab === 'approve' ? 'active' : ''} onClick={() => setActiveTab('approve')}>Approve</button>
+              <button className={activeTab === 'liquidity' ? 'active' : ''} onClick={() => setActiveTab('liquidity')}>Liquidity</button>
+              <button className={activeTab === 'mint' ? 'active' : ''} onClick={() => setActiveTab('mint')}>Mint (Test)</button>
+          </div>
 
-        <div className="content">
-            {activeTab === 'swap' && <Swap wallet={wallet} log={addLog} />}
-            {activeTab === 'approve' && <Approve wallet={wallet} log={addLog} />}
-            {activeTab === 'liquidity' && <Liquidity wallet={wallet} log={addLog} />}
-            {activeTab === 'mint' && <Mint wallet={wallet} log={addLog} />}
-        </div>
+          <div className="content">
+              {activeTab === 'swap' && <Swap wallet={wallet} log={addLog} onSuccess={fetchBalance} />}
+              {activeTab === 'approve' && <Approve wallet={wallet} log={addLog} onSuccess={fetchBalance} />}
+              {activeTab === 'liquidity' && <Liquidity wallet={wallet} log={addLog} onSuccess={fetchBalance} />}
+              {activeTab === 'mint' && <Mint wallet={wallet} log={addLog} onSuccess={fetchBalance} />}
+          </div>
 
-        <LogViewer logs={logs} />
-      </main>
-    </div>
+          <LogViewer logs={logs} />
+        </main>
+      </div>
+    </ToastProvider>
   );
 }
 
