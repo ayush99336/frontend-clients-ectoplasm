@@ -78,8 +78,9 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
             
             // Determine correct reserve order based on token direction
             // WCSPR is always reserve0, ECTO is always reserve1
-            const reserveIn = tokenIn === 'WCSPR' ? reserves.r0 : reserves.r1;
-            const reserveOut = tokenIn === 'WCSPR' ? reserves.r1 : reserves.r0;
+            // Correct reserve order: ECTO is token0 (r0), WCSPR is token1 (r1) based on hashes
+            const reserveIn = tokenIn === 'WCSPR' ? reserves.r1 : reserves.r0;
+            const reserveOut = tokenIn === 'WCSPR' ? reserves.r0 : reserves.r1;
             
             // Calculate expected output using AMM formula
             const outputAmount = dex.getAmountOut(amountInBigInt, reserveIn, reserveOut);
@@ -202,7 +203,8 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
             <h2>Swap Tokens</h2>
              {reserves && (
                 <div style={{fontSize: '0.8rem', marginBottom: '1rem', color: '#aaa'}}>
-                    Pool: {(Number(reserves.r0) / 10**18).toFixed(2)} WCSPR / {(Number(reserves.r1) / 10**18).toFixed(2)} ECTO
+                    {/* r0 is ECTO, r1 is WCSPR */}
+                    Pool: {(Number(reserves.r1) / 10**18).toFixed(2)} WCSPR / {(Number(reserves.r0) / 10**18).toFixed(2)} ECTO
                 </div>
             )}
             
@@ -280,7 +282,7 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
                 }}>
                     <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem'}}>
                         <span style={{color: '#aaa'}}>Expected Output:</span>
-                        <span style={{fontWeight: 'bold'}}>{expectedOutput} ECTO</span>
+                        <span style={{fontWeight: 'bold'}}>{expectedOutput} {tokenOut}</span>
                     </div>
                     <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem'}}>
                         <span style={{color: '#aaa'}}>Price Impact:</span>
@@ -290,7 +292,7 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
                     </div>
                     <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem'}}>
                         <span style={{color: '#aaa'}}>Minimum Received:</span>
-                        <span>{minimumReceived} ECTO</span>
+                        <span>{minimumReceived} {tokenOut}</span>
                     </div>
                     <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
                         <span style={{color: '#aaa'}}>Slippage Tolerance:</span>
