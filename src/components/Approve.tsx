@@ -15,7 +15,8 @@ interface Props {
 export const Approve: React.FC<Props> = ({ wallet, log, onSuccess }) => {
     const { dex, config } = useDex();
     const { showToast, removeToast } = useToast();
-    const [token, setToken] = useState<'WCSPR' | 'ECTO'>('WCSPR');
+    const tokenSymbols = Object.keys(config.tokens);
+    const [token, setToken] = useState<string>(tokenSymbols[0] || 'WCSPR');
     const [amount, setAmount] = useState('1000');
     const [loading, setLoading] = useState(false);
 
@@ -91,8 +92,9 @@ export const Approve: React.FC<Props> = ({ wallet, log, onSuccess }) => {
             <div className="form-group">
                 <label>Token</label>
                 <select value={token} onChange={(e) => setToken(e.target.value as any)}>
-                    <option value="WCSPR">WCSPR</option>
-                    <option value="ECTO">ECTO</option>
+                    {tokenSymbols.map((symbol) => (
+                        <option key={symbol} value={symbol}>{symbol}</option>
+                    ))}
                 </select>
             </div>
             <div className="form-group">

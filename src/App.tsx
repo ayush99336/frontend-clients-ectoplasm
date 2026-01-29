@@ -17,8 +17,17 @@ function App() {
   const [activeTab, setActiveTab] = useState('swap');
   const [logs, setLogs] = useState<string[]>([]);
   const [balance, setBalance] = useState<string>('0');
-  const [wcsprBalance, setWcsprBalance] = useState<string>('0');
-  const [ectoBalance, setEctoBalance] = useState<string>('0');
+  const [tokenBalances, setTokenBalances] = useState<Record<string, string>>({});
+
+  const formatTokenBalance = (value: bigint, decimals: number, precision = 4) => {
+    const raw = value.toString();
+    if (decimals <= 0) return raw;
+    const padded = raw.padStart(decimals + 1, '0');
+    const whole = padded.slice(0, -decimals);
+    let fraction = padded.slice(-decimals).replace(/0+$/, '');
+    if (precision >= 0 && fraction.length > precision) fraction = fraction.slice(0, precision);
+    return fraction.length ? `${whole}.${fraction}` : whole;
+  };
 
   const addLog = (msg: string) => {
     const time = new Date().toLocaleTimeString();
@@ -30,19 +39,16 @@ function App() {
         try {
             // CSPR Balance
             const bal = await dex.getCSPRBalance(wallet.activeKey);
-            const bStr = bal.toString();
-            setBalance(bStr.length > 9 ? bStr.slice(0, bStr.length - 9) : '0');
+            setBalance(formatTokenBalance(bal, 9, 4));
 
             // Token Balances
             const accountHash = wallet.publicKey.accountHash().toHex(); // hex string
-            
-            // WCSPR
-            const wcspr = await dex.getTokenBalance(config.tokens.WCSPR.contractHash, `account-hash-${accountHash}`);
-            setWcsprBalance((Number(wcspr) / (10 ** config.tokens.WCSPR.decimals)).toFixed(2));
-
-            // ECTO
-            const ecto = await dex.getTokenBalance(config.tokens.ECTO.contractHash, `account-hash-${accountHash}`);
-            setEctoBalance((Number(ecto) / (10 ** config.tokens.ECTO.decimals)).toFixed(2));
+            const entries = Object.entries(config.tokens).filter(([, t]) => t.contractHash);
+            const balances = await Promise.all(entries.map(async ([symbol, token]) => {
+              const bal = await dex.getTokenBalance(token.contractHash, `account-hash-${accountHash}`);
+              return [symbol, formatTokenBalance(bal, token.decimals, 4)] as const;
+            }));
+            setTokenBalances(Object.fromEntries(balances));
 
         } catch(e) { console.error(e); }
     }
@@ -64,7 +70,12 @@ function App() {
         
         <main style={{ padding: '2rem' }}>
           <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-               <h3>CSPR: {balance} | WCSPR: {wcsprBalance} | ECTO: {ectoBalance}</h3>
+               <h3>
+                {`CSPR: ${balance} | `}
+                {Object.keys(config.tokens)
+                  .map(symbol => `${symbol}: ${tokenBalances[symbol] ?? '0'}`)
+                  .join(' | ')}
+               </h3>
           </div>
 
           <div className="tabs">

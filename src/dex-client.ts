@@ -100,62 +100,164 @@ export class DexClient {
      * Get the current reserves for a pair
      */
     async getPairReserves(pairHash: string): Promise<{ reserve0: bigint; reserve1: bigint }> {
+        const state = await this.getPairState(pairHash);
+        if (!state) return { reserve0: 0n, reserve1: 0n };
+        return { reserve0: state.reserve0, reserve1: state.reserve1 };
+    }
+
+    /**
+     * Get token0/token1 for a pair
+     */
+    async getPairTokens(pairHash: string): Promise<{ token0: string; token1: string } | null> {
+        const state = await this.getPairState(pairHash);
+        if (!state) return null;
+        return { token0: state.token0, token1: state.token1 };
+    }
+
+    /**
+     * Read pair storage and infer token0/token1 and reserves by type/index.
+     */
+    async getPairState(pairHash: string): Promise<{ token0: string; token1: string; reserve0: bigint; reserve1: bigint } | null> {
         try {
             const stateRootWrapper = await this.rpcClient.getStateRootHashLatest();
             const stateRootHash = this.normalizeStateRootHash(stateRootWrapper.stateRootHash);
 
-            // The Factory returns package hashes, but we need contract hashes to query state
-            // Resolve package hash to contract hash
-            let contractHash = pairHash;
-            if (pairHash.startsWith('hash-')) {
-                // Query the package to get the active contract hash
-                try {
-                    const packageData: any = await this.rpcRequest('state_get_item', {
-                        state_root_hash: stateRootHash,
-                        key: pairHash,
-                        path: []
-                    });
+            const resolved = await this.resolveContractHash(stateRootHash, pairHash);
+            const contractHash = resolved?.contractHash ?? pairHash;
 
-                    // Extract contract hash from package
-                    const versions = packageData.stored_value?.ContractPackage?.versions;
-                    if (versions && versions.length > 0) {
-                        // Get the latest version's contract hash
-                        const latestVersion = versions[versions.length - 1];
-                        contractHash = latestVersion.contract_hash;
-
-                        // Convert contract- prefix to hash- for RPC compatibility
-                        if (contractHash.startsWith('contract-')) {
-                            contractHash = contractHash.replace('contract-', 'hash-');
-                        }
-
-                        console.log(`DEBUG: Resolved package ${pairHash} to contract ${contractHash}`);
-                    }
-                } catch (e) {
-                    console.warn(`DEBUG: Could not resolve package hash, trying as-is`, e);
-                }
+            const indices = [3, 4, 5, 6];
+            const entries: { index: number; value: any }[] = [];
+            for (const index of indices) {
+                const key = this.generateOdraVarKey(index);
+                const val = await this.queryStateValue(stateRootHash, contractHash, key);
+                entries.push({ index, value: val });
             }
 
-            // Actual Odra Storage Layout (discovered via testing):
-            // 0-2: lp_token (SubModule - takes multiple indices)
-            // 3: token0 (Var<Address>)
-            // 4: reserve1 (Var<U256>)  ← Note: reserve1 comes before reserve0!
-            // 5: reserve0 (Var<U256>)
-            // 6: token1 (Var<Address>) - likely
+            const getVal = (idx: number) => entries.find((e) => e.index === idx)?.value;
+            const v3 = getVal(3);
+            const v4 = getVal(4);
+            const v5 = getVal(5);
+            const v6 = getVal(6);
 
-            const reserve0Key = this.generateOdraVarKey(5);  // Changed from 3 to 5
-            const reserve1Key = this.generateOdraVarKey(4);  // Stays at 4
+            // Layout A (documented): token0=3, token1=4, reserve0=5, reserve1=6
+            if (typeof v3 === 'string' && typeof v4 === 'string' && typeof v5 === 'bigint' && typeof v6 === 'bigint') {
+                return { token0: v3, token1: v4, reserve0: v5, reserve1: v6 };
+            }
 
-            const reserve0Val = await this.queryStateValue(stateRootHash, contractHash, reserve0Key);
-            const reserve1Val = await this.queryStateValue(stateRootHash, contractHash, reserve1Key);
+            // Layout B (observed earlier): token0=3, reserve1=4, reserve0=5, token1=6
+            if (typeof v3 === 'string' && typeof v6 === 'string' && typeof v4 === 'bigint' && typeof v5 === 'bigint') {
+                return { token0: v3, token1: v6, reserve0: v5, reserve1: v4 };
+            }
+
+            const addressEntries = entries.filter((e) => typeof e.value === 'string');
+            const reserveEntries = entries.filter((e) => typeof e.value === 'bigint');
+
+            if (addressEntries.length < 2 || reserveEntries.length < 2) {
+                // Fallback: scan a wider index range to infer layout
+                const scanEntries: { index: number; value: any }[] = [];
+                for (let index = 0; index <= 24; index++) {
+                    const key = this.generateOdraVarKey(index);
+                    const val = await this.queryStateValue(stateRootHash, contractHash, key);
+                    scanEntries.push({ index, value: val });
+                }
+
+                const addrList = scanEntries.filter((e) => typeof e.value === 'string').sort((a, b) => a.index - b.index);
+                const numList = scanEntries.filter((e) => typeof e.value === 'bigint').sort((a, b) => a.index - b.index);
+
+                if (addrList.length >= 2) {
+                    const token0 = addrList[0].value as string;
+                    const token1 = addrList[1].value as string;
+                    const minReserveIndex = addrList[1].index + 1;
+                    const reserves = numList.filter((e) => e.index >= minReserveIndex);
+                    if (reserves.length >= 2) {
+                        return {
+                            token0,
+                            token1,
+                            reserve0: reserves[0].value as bigint,
+                            reserve1: reserves[1].value as bigint
+                        };
+                    }
+                }
+                return null;
+            }
+
+            addressEntries.sort((a, b) => a.index - b.index);
+            reserveEntries.sort((a, b) => a.index - b.index);
 
             return {
-                reserve0: reserve0Val || 0n,
-                reserve1: reserve1Val || 0n
+                token0: addressEntries[0].value as string,
+                token1: addressEntries[1].value as string,
+                reserve0: reserveEntries[0].value as bigint,
+                reserve1: reserveEntries[1].value as bigint
             };
         } catch (e) {
-            console.error(`Error fetching reserves for ${pairHash}:`, e);
-            return { reserve0: 0n, reserve1: 0n };
+            console.error(`Error fetching pair state for ${pairHash}:`, e);
+            return null;
         }
+    }
+
+    /**
+     * Debug helper for pair state lookups.
+     */
+    async getPairStateDebug(pairHash: string): Promise<{ contractHash: string; namedKeys: string[] } | null> {
+        try {
+            const stateRootWrapper = await this.rpcClient.getStateRootHashLatest();
+            const stateRootHash = this.normalizeStateRootHash(stateRootWrapper.stateRootHash);
+            const resolved = await this.resolveContractHash(stateRootHash, pairHash);
+            const contractHash = resolved?.contractHash ?? pairHash;
+
+            const contractData: any = await this.rpcRequest('state_get_item', {
+                state_root_hash: stateRootHash,
+                key: this.normalizeContractKey(contractHash),
+                path: []
+            });
+
+            const namedKeys = contractData.stored_value?.Contract?.named_keys?.map((k: any) => k.name) ?? [];
+            return { contractHash, namedKeys };
+        } catch (e) {
+            console.error(`Error fetching pair debug for ${pairHash}:`, e);
+            return null;
+        }
+    }
+
+    private async resolveContractHash(stateRootHash: string, key: string): Promise<{ contractHash: string } | null> {
+        const tryKey = async (k: string) => {
+            const data: any = await this.rpcRequest('state_get_item', {
+                state_root_hash: stateRootHash,
+                key: k,
+                path: []
+            });
+            if (data?.stored_value?.ContractPackage?.versions?.length) {
+                const versions = data.stored_value.ContractPackage.versions;
+                let contractHash = versions[versions.length - 1].contract_hash;
+                if (contractHash.startsWith('contract-')) contractHash = contractHash.replace('contract-', 'hash-');
+                return { contractHash };
+            }
+            if (data?.stored_value?.Contract) {
+                return { contractHash: k };
+            }
+            return null;
+        };
+
+        try {
+            const normalized = this.normalizeContractKey(key);
+            const res = await tryKey(normalized);
+            if (res) return res;
+        } catch (_) {
+            // fallthrough
+        }
+
+        if (key.startsWith('hash-')) {
+            const hex = key.replace('hash-', '');
+            try {
+                const res = await tryKey(`contract-package-${hex}`);
+                if (res) return res;
+            } catch (_) {
+                // ignore
+            }
+        }
+
+        return null;
     }
 
     private generateOdraVarKey(index: number): string {
@@ -199,47 +301,76 @@ export class DexClient {
      * Get the pair address for two tokens
      */
     async getPairAddress(tokenA: string, tokenB: string): Promise<string | null> {
+        const result = await this.getPairAddressDebug(tokenA, tokenB);
+        return result.pairAddr;
+    }
+
+    /**
+     * Get pair address with debug details (indices tried, mapping key hash).
+     */
+    async getPairAddressDebug(tokenA: string, tokenB: string): Promise<{ pairAddr: string | null; tried: { index: number; storageKey: string; hit: boolean; raw?: any }[] }> {
         try {
             const stateRootWrapper = await this.rpcClient.getStateRootHashLatest();
             const stateRootHash = this.normalizeStateRootHash(stateRootWrapper.stateRootHash);
 
             const factoryHash = this.config.factoryHash;
 
-            // Serialize Keys
-            const keyA = this.serializeKey(tokenA);
-            const keyB = this.serializeKey(tokenB);
+            const expandTokenCandidates = (token: string): string[] => {
+                const candidates = [token];
+                const match = Object.values(this.config.tokens).find((t) => t.packageHash === token || t.contractHash === token);
+                if (match) {
+                    if (match.packageHash && !candidates.includes(match.packageHash)) candidates.push(match.packageHash);
+                    if (match.contractHash && !candidates.includes(match.contractHash)) candidates.push(match.contractHash);
+                }
+                return candidates;
+            };
 
-            // Sort Keys (Odra/Casper logic: compare bytes)
-            let first = keyA;
-            let second = keyB;
-            if (this.compareBytes(keyA, keyB) > 0) {
-                first = keyB;
-                second = keyA;
+            const candidateTags = [1, 15];
+            const tokenACandidates = expandTokenCandidates(tokenA);
+            const tokenBCandidates = expandTokenCandidates(tokenB);
+
+            const tried: { index: number; storageKey: string; hit: boolean; raw?: any }[] = [];
+            const seenKeys = new Set<string>();
+            const candidateIndices = [4, 3, 5];
+
+            for (const a of tokenACandidates) {
+                for (const b of tokenBCandidates) {
+                    for (const tagA of candidateTags) {
+                        for (const tagB of candidateTags) {
+                            const keyA = this.serializeKeyWithTag(a, tagA);
+                            const keyB = this.serializeKeyWithTag(b, tagB);
+
+                            let first = keyA;
+                            let second = keyB;
+                            if (this.compareBytes(keyA, keyB) > 0) {
+                                first = keyB;
+                                second = keyA;
+                            }
+
+                            const mappingKey = new Uint8Array(first.length + second.length);
+                            mappingKey.set(first);
+                            mappingKey.set(second, first.length);
+
+                            for (const index of candidateIndices) {
+                                const storageKey = this.generateOdraMappingKey(index, mappingKey);
+                                if (seenKeys.has(storageKey)) continue;
+                                seenKeys.add(storageKey);
+                                const val = await this.queryStateValue(stateRootHash, factoryHash, storageKey);
+                                const hit = typeof val === 'string';
+                                tried.push({ index, storageKey, hit, raw: val });
+                                if (hit) {
+                                    return { pairAddr: val, tried };
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
-            // Construct Mapping Key: (Address, Address) -> Serialized A + Serialized B
-            const mappingKey = new Uint8Array(first.length + second.length);
-            mappingKey.set(first);
-            mappingKey.set(second, first.length);
-
-            // Factory 'pairs' mapping is likely Index 3
-            // 0: fee_to
-            // 1: fee_to_setter
-            // 2: pair_factory
-            // 3: pairs
-            // Factory 'pairs' mapping found at Index 4 (No Tag)
-            const storageKey = this.generateOdraMappingKey(4, mappingKey);
-
-            // Query State
-            const val = await this.queryStateValue(stateRootHash, factoryHash, storageKey);
-
-            if (typeof val === 'string') {
-                return val;
-            }
-            return null;
+            return { pairAddr: null, tried };
         } catch (e) {
             console.error(`Error fetching pair address`, e);
-            return null;
+            return { pairAddr: null, tried: [] };
         }
     }
 
@@ -297,23 +428,20 @@ export class DexClient {
 
     // Helper: Serialize a Key string (hash-... or account-hash-...) into bytes [Tag, 32bytes]
     private serializeKey(keyStr: string): Uint8Array {
-        let tag = 1; // Default to Hash (Contract/Package)
+        return this.serializeKeyWithTag(keyStr, 1);
+    }
+
+    private serializeKeyWithTag(keyStr: string, tag: number): Uint8Array {
         let clean = keyStr;
         if (keyStr.startsWith('account-hash-')) {
-            tag = 0; // Account
+            tag = 0;
             clean = keyStr.replace('account-hash-', '');
         } else if (keyStr.startsWith('hash-')) {
-            tag = 1; // Hash
             clean = keyStr.replace('hash-', '');
         } else if (keyStr.startsWith('contract-package-')) {
-            tag = 1; // Treat Package as Hash in Key serialization usually? 
-            // Actually, Key has variants. 
-            // Account = 0
-            // Hash = 1
-            // URef = 2
-            // ...
-            // There is no separate Package variant in standard Key, usually stored as Hash.
             clean = keyStr.replace('contract-package-', '');
+        } else if (keyStr.startsWith('contract-')) {
+            clean = keyStr.replace('contract-', '');
         }
 
         const bytes = new Uint8Array(33);
@@ -437,6 +565,13 @@ export class DexClient {
                 // Handle Key Type (e.g. ContractPackageHash)
                 if (clValue.cl_type?.Key || clValue.cl_type === "Key") {
                     if (typeof clValue.parsed === 'string') {
+                        if (clValue.parsed.startsWith('hash-') || clValue.parsed.startsWith('contract-') || clValue.parsed.startsWith('account-hash-')) {
+                            return clValue.parsed;
+                        }
+                        // Raw hex key without prefix
+                        if (/^[0-9a-fA-F]{64}$/.test(clValue.parsed)) {
+                            return `hash-${clValue.parsed}`;
+                        }
                         return clValue.parsed;
                     }
                     if (typeof clValue.parsed === 'object' && clValue.parsed.Hash) {
@@ -444,6 +579,9 @@ export class DexClient {
                     }
                     if (typeof clValue.parsed === 'object' && clValue.parsed.Account) {
                         return `account-hash-${clValue.parsed.Account}`;
+                    }
+                    if (typeof clValue.parsed === 'object' && clValue.parsed.Contract) {
+                        return `hash-${clValue.parsed.Contract}`;
                     }
                     if (typeof clValue.parsed === 'object' && clValue.parsed.ContractPackage) {
                         return `hash-${clValue.parsed.ContractPackage}`;
@@ -876,4 +1014,3 @@ export class DexClient {
         return result.result.deploy_hash;
     }
 }
-

@@ -15,14 +15,19 @@ interface Props {
 export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
     const { dex, config } = useDex();
     const { showToast, removeToast } = useToast();
+    const tokenSymbols = Object.keys(config.tokens);
     
     // Token selection
-    const [tokenIn, setTokenIn] = useState<'WCSPR' | 'ECTO'>('WCSPR');
-    const [tokenOut, setTokenOut] = useState<'WCSPR' | 'ECTO'>('ECTO');
+    const [tokenIn, setTokenIn] = useState<string>(tokenSymbols[0] || 'WCSPR');
+    const [tokenOut, setTokenOut] = useState<string>(tokenSymbols[1] || tokenSymbols[0] || 'ECTO');
     
     const [amountIn, setAmountIn] = useState('10');
     const [loading, setLoading] = useState(false);
-    const [reserves, setReserves] = useState<{r0: bigint, r1: bigint} | null>(null);
+    const [pairInfo, setPairInfo] = useState<{r0: bigint, r1: bigint, token0: string, token1: string} | null>(null);
+    const [pairDebug, setPairDebug] = useState<{ index: number; storageKey: string; hit: boolean }[]>([]);
+    const [pairAddr, setPairAddr] = useState<string | null>(null);
+    const [pairError, setPairError] = useState<string | null>(null);
+    const [pairNamedKeys, setPairNamedKeys] = useState<string[]>([]);
     const [slippage, setSlippage] = useState('0.5'); // 0.5% default slippage
     
     // Swap preview state
@@ -39,32 +44,124 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
     // Prevent same token selection
     useEffect(() => {
         if (tokenIn === tokenOut) {
-            // Auto-swap to prevent same token
-            setTokenOut(tokenIn === 'WCSPR' ? 'ECTO' : 'WCSPR');
+            const fallback = tokenSymbols.find((s) => s !== tokenIn);
+            if (fallback) setTokenOut(fallback);
         }
-    }, [tokenIn, tokenOut]);
+    }, [tokenIn, tokenOut, tokenSymbols]);
+
+    const normalizeHash = (keyStr: string) => {
+        if (!keyStr) return '';
+        return keyStr
+            .toLowerCase()
+            .replace(/^hash-/, '')
+            .replace(/^contract-/, '')
+            .replace(/^contract-package-/, '');
+    };
+
+    const serializeKey = (keyStr: string): Uint8Array => {
+        let tag = 1;
+        let clean = keyStr;
+        if (keyStr.startsWith('account-hash-')) {
+            tag = 0;
+            clean = keyStr.replace('account-hash-', '');
+        } else if (keyStr.startsWith('hash-')) {
+            clean = keyStr.replace('hash-', '');
+        } else if (keyStr.startsWith('contract-package-')) {
+            clean = keyStr.replace('contract-package-', '');
+        }
+        const bytes = new Uint8Array(33);
+        bytes[0] = tag;
+        const hashBytes = new Uint8Array(clean.match(/.{1,2}/g)!.map(b => parseInt(b, 16)));
+        bytes.set(hashBytes, 1);
+        return bytes;
+    };
+
+    const compareBytes = (a: Uint8Array, b: Uint8Array): number => {
+        const len = Math.min(a.length, b.length);
+        for (let i = 0; i < len; i++) {
+            if (a[i] !== b[i]) return a[i] - b[i];
+        }
+        return a.length - b.length;
+    };
 
     useEffect(() => {
         const fetchReserves = async () => {
-             const pairAddr = await dex.getPairAddress(
-                 config.tokens.WCSPR.packageHash,
-                 config.tokens.ECTO.packageHash
-             );
+            setPairError(null);
+            setPairNamedKeys([]);
+            const tokenInCfg = config.tokens[tokenIn];
+            const tokenOutCfg = config.tokens[tokenOut];
+            if (!tokenInCfg?.packageHash || !tokenOutCfg?.packageHash || tokenIn === tokenOut) {
+                setPairAddr(null);
+                setPairInfo(null);
+                return;
+            }
 
-             if (pairAddr) {
-                 const res = await dex.getPairReserves(pairAddr);
-                 setReserves({
-                     r0: res.reserve0,
-                     r1: res.reserve1
-                 });
-             }
+            try {
+                const pairResult = await dex.getPairAddressDebug(
+                    tokenInCfg.packageHash,
+                    tokenOutCfg.packageHash
+                );
+
+                setPairDebug(pairResult.tried.map(t => ({ index: t.index, storageKey: t.storageKey, hit: t.hit })));
+                setPairAddr(pairResult.pairAddr);
+
+                if (!pairResult.pairAddr) {
+                    setPairInfo(null);
+                    return;
+                }
+
+                const res = await dex.getPairReserves(pairResult.pairAddr);
+                const pairTokens = await dex.getPairTokens(pairResult.pairAddr);
+                if (!pairTokens) {
+                    const dbg = await dex.getPairStateDebug(pairResult.pairAddr);
+                    setPairNamedKeys(dbg?.namedKeys ?? []);
+                }
+
+                let token0 = tokenIn;
+                let token1 = tokenOut;
+
+                if (pairTokens) {
+                    const findSymbol = (addr: string) => {
+                        const normalized = normalizeHash(addr);
+                        return Object.entries(config.tokens).find(([, t]) => {
+                            const pkg = normalizeHash(t.packageHash);
+                            const ctr = normalizeHash(t.contractHash);
+                            return normalized === pkg || normalized === ctr;
+                        })?.[0];
+                    };
+
+                    const token0Symbol = findSymbol(pairTokens.token0);
+                    const token1Symbol = findSymbol(pairTokens.token1);
+                    if (token0Symbol && token1Symbol) {
+                        token0 = token0Symbol;
+                        token1 = token1Symbol;
+                    } else if (token0Symbol && !token1Symbol) {
+                        token0 = token0Symbol;
+                        token1 = token0 === tokenIn ? tokenOut : tokenIn;
+                    } else if (!token0Symbol && token1Symbol) {
+                        token1 = token1Symbol;
+                        token0 = token1 === tokenIn ? tokenOut : tokenIn;
+                    }
+                } else {
+                    const keyA = serializeKey(tokenInCfg.packageHash);
+                    const keyB = serializeKey(tokenOutCfg.packageHash);
+                    token0 = compareBytes(keyA, keyB) <= 0 ? tokenIn : tokenOut;
+                    token1 = token0 === tokenIn ? tokenOut : tokenIn;
+                }
+
+                setPairInfo({ r0: res.reserve0, r1: res.reserve1, token0, token1 });
+            } catch (e: any) {
+                setPairInfo(null);
+                setPairAddr(null);
+                setPairError(e?.message || 'Failed to load pool');
+            }
         };
-       fetchReserves();
-    }, [dex, config]);
+        fetchReserves();
+    }, [dex, config, tokenIn, tokenOut]);
 
     // Calculate swap preview whenever input, reserves, or token selection changes
     useEffect(() => {
-        if (!reserves || !amountIn || parseFloat(amountIn) <= 0) {
+        if (!pairInfo || !amountIn || parseFloat(amountIn) <= 0) {
             setExpectedOutput('0');
             setPriceImpact(0);
             setMinimumReceived('0');
@@ -77,10 +174,8 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
             const amountInBigInt = BigInt(Math.floor(parseFloat(amountIn) * (10 ** decIn)));
             
             // Determine correct reserve order based on token direction
-            // WCSPR is always reserve0, ECTO is always reserve1
-            // Correct reserve order: ECTO is token0 (r0), WCSPR is token1 (r1) based on hashes
-            const reserveIn = tokenIn === 'WCSPR' ? reserves.r1 : reserves.r0;
-            const reserveOut = tokenIn === 'WCSPR' ? reserves.r0 : reserves.r1;
+            const reserveIn = tokenIn === pairInfo.token0 ? pairInfo.r0 : pairInfo.r1;
+            const reserveOut = tokenIn === pairInfo.token0 ? pairInfo.r1 : pairInfo.r0;
             
             // Calculate expected output using AMM formula
             const outputAmount = dex.getAmountOut(amountInBigInt, reserveIn, reserveOut);
@@ -100,7 +195,7 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
         } catch (e) {
             console.error('Error calculating swap preview:', e);
         }
-    }, [amountIn, reserves, slippage, tokenIn, tokenOut, dex, config]);
+    }, [amountIn, pairInfo, slippage, tokenIn, tokenOut, dex, config]);
 
     const handleSwap = async () => {
         if (!wallet.publicKey) {
@@ -201,10 +296,34 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
     return (
         <div className="card">
             <h2>Swap Tokens</h2>
-             {reserves && (
+             {pairInfo && (
                 <div style={{fontSize: '0.8rem', marginBottom: '1rem', color: '#aaa'}}>
-                    {/* r0 is ECTO, r1 is WCSPR */}
-                    Pool: {(Number(reserves.r1) / 10**18).toFixed(2)} WCSPR / {(Number(reserves.r0) / 10**18).toFixed(2)} ECTO
+                    Pool: {(Number(pairInfo.r0) / 10**config.tokens[pairInfo.token0].decimals).toFixed(2)} {pairInfo.token0} / {(Number(pairInfo.r1) / 10**config.tokens[pairInfo.token1].decimals).toFixed(2)} {pairInfo.token1}
+                </div>
+            )}
+            {!pairInfo && tokenIn !== tokenOut && (
+                <div style={{fontSize: '0.8rem', marginBottom: '1rem', color: '#aaa'}}>
+                    No pool found for {tokenIn} / {tokenOut}
+                    {pairDebug.length > 0 && (
+                        <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: '#888' }}>
+                            Tried factory indices: {pairDebug.map(t => `${t.index}${t.hit ? '✓' : '✗'}`).join(', ')}
+                        </div>
+                    )}
+                    {pairAddr && (
+                        <div style={{ marginTop: '0.35rem', fontSize: '0.75rem', color: '#888' }}>
+                            Pair address: {pairAddr}
+                        </div>
+                    )}
+                    {pairError && (
+                        <div style={{ marginTop: '0.35rem', fontSize: '0.75rem', color: '#c66' }}>
+                            Error: {pairError}
+                        </div>
+                    )}
+                    {!pairInfo && pairAddr && pairNamedKeys.length > 0 && (
+                        <div style={{ marginTop: '0.35rem', fontSize: '0.75rem', color: '#888' }}>
+                            Pair named_keys: {pairNamedKeys.join(', ')}
+                        </div>
+                    )}
                 </div>
             )}
             
@@ -214,11 +333,12 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
                 <div style={{display: 'flex', gap: '8px'}}>
                     <select 
                         value={tokenIn} 
-                        onChange={e => setTokenIn(e.target.value as 'WCSPR' | 'ECTO')}
+                        onChange={e => setTokenIn(e.target.value)}
                         style={{flex: '0 0 100px'}}
                     >
-                        <option value="WCSPR">WCSPR</option>
-                        <option value="ECTO">ECTO</option>
+                        {tokenSymbols.map((symbol) => (
+                            <option key={symbol} value={symbol}>{symbol}</option>
+                        ))}
                     </select>
                     <input 
                         type="number" 
@@ -255,11 +375,12 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
                 <div style={{display: 'flex', gap: '8px'}}>
                     <select 
                         value={tokenOut} 
-                        onChange={e => setTokenOut(e.target.value as 'WCSPR' | 'ECTO')}
+                        onChange={e => setTokenOut(e.target.value)}
                         style={{flex: '0 0 100px'}}
                     >
-                        <option value="WCSPR">WCSPR</option>
-                        <option value="ECTO">ECTO</option>
+                        {tokenSymbols.map((symbol) => (
+                            <option key={symbol} value={symbol}>{symbol}</option>
+                        ))}
                     </select>
                     <input 
                         type="text" 
@@ -272,7 +393,7 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
             </div>
 
             {/* Swap Preview */}
-            {parseFloat(amountIn) > 0 && reserves && (
+            {parseFloat(amountIn) > 0 && pairInfo && (
                 <div style={{
                     background: 'rgba(255,255,255,0.05)',
                     padding: '1rem',
@@ -322,7 +443,7 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
                 </div>
             )}
 
-            <button onClick={handleSwap} disabled={loading || !reserves || parseFloat(amountIn) <= 0}>
+            <button onClick={handleSwap} disabled={loading || !pairInfo || parseFloat(amountIn) <= 0}>
                 {loading ? 'Swapping...' : 'Swap'}
             </button>
         </div>

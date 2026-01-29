@@ -15,6 +15,11 @@ interface Props {
 export const Liquidity: React.FC<Props> = ({ wallet, log, onSuccess }) => {
     const { dex, config } = useDex();
     const { showToast } = useToast();
+    const tokenSymbols = Object.keys(config.tokens);
+    const defaultTokenA = tokenSymbols[0] || 'WCSPR';
+    const defaultTokenB = tokenSymbols[1] || tokenSymbols[0] || 'ECTO';
+    const [tokenA, setTokenA] = useState<string>(defaultTokenA);
+    const [tokenB, setTokenB] = useState<string>(defaultTokenB);
     // Add Liquidity State
     const [amountA, setAmountA] = useState('100');
     const [amountB, setAmountB] = useState('100');
@@ -44,17 +49,25 @@ export const Liquidity: React.FC<Props> = ({ wallet, log, onSuccess }) => {
 
     const handleAdd = async () => {
         if (!wallet.publicKey) return;
+        if (tokenA === tokenB) {
+            showToast('error', 'Select two different tokens');
+            return;
+        }
         setLoading(true);
         try {
-            const decA = config.tokens.WCSPR.decimals;
-            const decB = config.tokens.ECTO.decimals;
+            if (!config.tokens[tokenA]?.packageHash || !config.tokens[tokenB]?.packageHash) {
+                showToast('error', 'Missing token package hash in config');
+                return;
+            }
+            const decA = config.tokens[tokenA]?.decimals ?? 18;
+            const decB = config.tokens[tokenB]?.decimals ?? 18;
             const amtABI = BigInt(Math.floor(parseFloat(amountA) * (10 ** decA)));
             const amtBBI = BigInt(Math.floor(parseFloat(amountB) * (10 ** decB)));
 
-            log(`Adding Liquidity: ${amountA} WCSPR + ${amountB} ECTO`);
+            log(`Adding Liquidity: ${amountA} ${tokenA} + ${amountB} ${tokenB}`);
             const deploy = dex.makeAddLiquidityDeploy(
-                config.tokens.WCSPR.packageHash,
-                config.tokens.ECTO.packageHash,
+                config.tokens[tokenA].packageHash,
+                config.tokens[tokenB].packageHash,
                 amtABI,
                 amtBBI,
                 0n, // minA (no slippage protection)
@@ -73,15 +86,23 @@ export const Liquidity: React.FC<Props> = ({ wallet, log, onSuccess }) => {
 
     const handleRemove = async () => {
          if (!wallet.publicKey) return;
+         if (tokenA === tokenB) {
+            showToast('error', 'Select two different tokens');
+            return;
+         }
         setLoading(true);
         try {
+            if (!config.tokens[tokenA]?.packageHash || !config.tokens[tokenB]?.packageHash) {
+                showToast('error', 'Missing token package hash in config');
+                return;
+            }
             // LP Token is always 18 decimals
             const liqBI = BigInt(Math.floor(parseFloat(removeAmount) * 1e18));
 
             log(`Removing Liquidity: ${removeAmount} LP Tokens`);
             const deploy = dex.makeRemoveLiquidityDeploy(
-                config.tokens.WCSPR.packageHash,
-                config.tokens.ECTO.packageHash,
+                config.tokens[tokenA].packageHash,
+                config.tokens[tokenB].packageHash,
                 liqBI,
                 0n,
                 0n,
@@ -102,11 +123,27 @@ export const Liquidity: React.FC<Props> = ({ wallet, log, onSuccess }) => {
             <div className="card">
                 <h2>Add Liquidity</h2>
                 <div className="form-group">
-                    <label>WCSPR Amount</label>
+                    <label>Token A</label>
+                    <select value={tokenA} onChange={(e) => setTokenA(e.target.value)}>
+                        {tokenSymbols.map((symbol) => (
+                            <option key={symbol} value={symbol}>{symbol}</option>
+                        ))}
+                    </select>
+                </div>
+                <div className="form-group">
+                    <label>{tokenA} Amount</label>
                     <input type="number" value={amountA} onChange={e => setAmountA(e.target.value)} />
                 </div>
                 <div className="form-group">
-                    <label>ECTO Amount</label>
+                    <label>Token B</label>
+                    <select value={tokenB} onChange={(e) => setTokenB(e.target.value)}>
+                        {tokenSymbols.map((symbol) => (
+                            <option key={symbol} value={symbol}>{symbol}</option>
+                        ))}
+                    </select>
+                </div>
+                <div className="form-group">
+                    <label>{tokenB} Amount</label>
                     <input type="number" value={amountB} onChange={e => setAmountB(e.target.value)} />
                 </div>
                 <button onClick={handleAdd} disabled={loading}>{loading ? 'Processing...' : 'Add Liquidity'}</button>
