@@ -4,10 +4,5 @@
       "source": "/rpc",
       "destination": "/api/rpc"
     }
-  ],
-  "functions": {
-    "api/**/*.ts": {
-      "runtime": "nodejs20.x"
-    }
-  }
+  ]
 }
