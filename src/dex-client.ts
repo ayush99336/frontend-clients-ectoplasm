@@ -91,10 +91,14 @@ export class DexClient {
     constructor(config: DexConfig) {
         this.config = config;
         // In dev, always use the Vite proxy to avoid node CORS.
-        // In prod, use the configured node URL (ensure it has /rpc).
-        const handlerUrl = (import.meta as any).env?.DEV
+        // In prod, prefer HTTPS direct if provided, otherwise use the Vercel proxy.
+        const isDev = (import.meta as any).env?.DEV;
+        const directUrl = config.nodeUrl?.startsWith('https://')
+            ? (config.nodeUrl.endsWith('/rpc') ? config.nodeUrl : `${config.nodeUrl}/rpc`)
+            : '';
+        const handlerUrl = isDev
             ? '/rpc'
-            : (config.nodeUrl.endsWith('/rpc') ? config.nodeUrl : `${config.nodeUrl}/rpc`);
+            : (directUrl || '/api/rpc');
         this.rpcClient = new RpcClient(new HttpHandler(handlerUrl));
     }
 
