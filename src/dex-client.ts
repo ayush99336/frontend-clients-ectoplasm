@@ -100,9 +100,49 @@ export class DexClient {
      * Get the current reserves for a pair
      */
     async getPairReserves(pairHash: string): Promise<{ reserve0: bigint; reserve1: bigint }> {
-        const state = await this.getPairState(pairHash);
-        if (!state) return { reserve0: 0n, reserve1: 0n };
-        return { reserve0: state.reserve0, reserve1: state.reserve1 };
+        try {
+            const stateRootWrapper = await this.rpcClient.getStateRootHashLatest();
+            const stateRootHash = this.normalizeStateRootHash(stateRootWrapper.stateRootHash);
+
+            let contractHash = pairHash;
+            if (pairHash.startsWith('hash-')) {
+                try {
+                    const packageData: any = await this.rpcRequest('state_get_item', {
+                        state_root_hash: stateRootHash,
+                        key: pairHash,
+                        path: []
+                    });
+
+                    const versions = packageData.stored_value?.ContractPackage?.versions;
+                    if (versions && versions.length > 0) {
+                        const latestVersion = versions[versions.length - 1];
+                        contractHash = latestVersion.contract_hash;
+
+                        if (contractHash.startsWith('contract-')) {
+                            contractHash = contractHash.replace('contract-', 'hash-');
+                        }
+                    }
+                } catch (e) {
+                    console.warn(`DEBUG: Could not resolve package hash, trying as-is`, e);
+                }
+            }
+
+            // Layout observed earlier:
+            // 3: token0, 4: reserve1, 5: reserve0, 6: token1
+            const reserve0Key = this.generateOdraVarKey(5);
+            const reserve1Key = this.generateOdraVarKey(4);
+
+            const reserve0Val = await this.queryStateValue(stateRootHash, contractHash, reserve0Key);
+            const reserve1Val = await this.queryStateValue(stateRootHash, contractHash, reserve1Key);
+
+            return {
+                reserve0: reserve0Val || 0n,
+                reserve1: reserve1Val || 0n
+            };
+        } catch (e) {
+            console.error(`Error fetching reserves for ${pairHash}:`, e);
+            return { reserve0: 0n, reserve1: 0n };
+        }
     }
 
     /**

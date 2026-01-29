@@ -24,10 +24,6 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
     const [amountIn, setAmountIn] = useState('10');
     const [loading, setLoading] = useState(false);
     const [pairInfo, setPairInfo] = useState<{r0: bigint, r1: bigint, token0: string, token1: string} | null>(null);
-    const [pairDebug, setPairDebug] = useState<{ index: number; storageKey: string; hit: boolean }[]>([]);
-    const [pairAddr, setPairAddr] = useState<string | null>(null);
-    const [pairError, setPairError] = useState<string | null>(null);
-    const [pairNamedKeys, setPairNamedKeys] = useState<string[]>([]);
     const [slippage, setSlippage] = useState('0.5'); // 0.5% default slippage
     
     // Swap preview state
@@ -48,15 +44,6 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
             if (fallback) setTokenOut(fallback);
         }
     }, [tokenIn, tokenOut, tokenSymbols]);
-
-    const normalizeHash = (keyStr: string) => {
-        if (!keyStr) return '';
-        return keyStr
-            .toLowerCase()
-            .replace(/^hash-/, '')
-            .replace(/^contract-/, '')
-            .replace(/^contract-package-/, '');
-    };
 
     const serializeKey = (keyStr: string): Uint8Array => {
         let tag = 1;
@@ -86,75 +73,30 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
 
     useEffect(() => {
         const fetchReserves = async () => {
-            setPairError(null);
-            setPairNamedKeys([]);
             const tokenInCfg = config.tokens[tokenIn];
             const tokenOutCfg = config.tokens[tokenOut];
             if (!tokenInCfg?.packageHash || !tokenOutCfg?.packageHash || tokenIn === tokenOut) {
-                setPairAddr(null);
                 setPairInfo(null);
                 return;
             }
 
-            try {
-                const pairResult = await dex.getPairAddressDebug(
-                    tokenInCfg.packageHash,
-                    tokenOutCfg.packageHash
-                );
+            const pairAddr = await dex.getPairAddress(
+                tokenInCfg.packageHash,
+                tokenOutCfg.packageHash
+            );
 
-                setPairDebug(pairResult.tried.map(t => ({ index: t.index, storageKey: t.storageKey, hit: t.hit })));
-                setPairAddr(pairResult.pairAddr);
-
-                if (!pairResult.pairAddr) {
-                    setPairInfo(null);
-                    return;
-                }
-
-                const res = await dex.getPairReserves(pairResult.pairAddr);
-                const pairTokens = await dex.getPairTokens(pairResult.pairAddr);
-                if (!pairTokens) {
-                    const dbg = await dex.getPairStateDebug(pairResult.pairAddr);
-                    setPairNamedKeys(dbg?.namedKeys ?? []);
-                }
-
-                let token0 = tokenIn;
-                let token1 = tokenOut;
-
-                if (pairTokens) {
-                    const findSymbol = (addr: string) => {
-                        const normalized = normalizeHash(addr);
-                        return Object.entries(config.tokens).find(([, t]) => {
-                            const pkg = normalizeHash(t.packageHash);
-                            const ctr = normalizeHash(t.contractHash);
-                            return normalized === pkg || normalized === ctr;
-                        })?.[0];
-                    };
-
-                    const token0Symbol = findSymbol(pairTokens.token0);
-                    const token1Symbol = findSymbol(pairTokens.token1);
-                    if (token0Symbol && token1Symbol) {
-                        token0 = token0Symbol;
-                        token1 = token1Symbol;
-                    } else if (token0Symbol && !token1Symbol) {
-                        token0 = token0Symbol;
-                        token1 = token0 === tokenIn ? tokenOut : tokenIn;
-                    } else if (!token0Symbol && token1Symbol) {
-                        token1 = token1Symbol;
-                        token0 = token1 === tokenIn ? tokenOut : tokenIn;
-                    }
-                } else {
-                    const keyA = serializeKey(tokenInCfg.packageHash);
-                    const keyB = serializeKey(tokenOutCfg.packageHash);
-                    token0 = compareBytes(keyA, keyB) <= 0 ? tokenIn : tokenOut;
-                    token1 = token0 === tokenIn ? tokenOut : tokenIn;
-                }
-
-                setPairInfo({ r0: res.reserve0, r1: res.reserve1, token0, token1 });
-            } catch (e: any) {
+            if (!pairAddr) {
                 setPairInfo(null);
-                setPairAddr(null);
-                setPairError(e?.message || 'Failed to load pool');
+                return;
             }
+
+            const res = await dex.getPairReserves(pairAddr);
+            const keyA = serializeKey(tokenInCfg.packageHash);
+            const keyB = serializeKey(tokenOutCfg.packageHash);
+            const token0 = compareBytes(keyA, keyB) <= 0 ? tokenIn : tokenOut;
+            const token1 = token0 === tokenIn ? tokenOut : tokenIn;
+
+            setPairInfo({ r0: res.reserve0, r1: res.reserve1, token0, token1 });
         };
         fetchReserves();
     }, [dex, config, tokenIn, tokenOut]);
@@ -304,26 +246,6 @@ export const Swap: React.FC<Props> = ({ wallet, log, onSuccess }) => {
             {!pairInfo && tokenIn !== tokenOut && (
                 <div style={{fontSize: '0.8rem', marginBottom: '1rem', color: '#aaa'}}>
                     No pool found for {tokenIn} / {tokenOut}
-                    {pairDebug.length > 0 && (
-                        <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: '#888' }}>
-                            Tried factory indices: {pairDebug.map(t => `${t.index}${t.hit ? '✓' : '✗'}`).join(', ')}
-                        </div>
-                    )}
-                    {pairAddr && (
-                        <div style={{ marginTop: '0.35rem', fontSize: '0.75rem', color: '#888' }}>
-                            Pair address: {pairAddr}
-                        </div>
-                    )}
-                    {pairError && (
-                        <div style={{ marginTop: '0.35rem', fontSize: '0.75rem', color: '#c66' }}>
-                            Error: {pairError}
-                        </div>
-                    )}
-                    {!pairInfo && pairAddr && pairNamedKeys.length > 0 && (
-                        <div style={{ marginTop: '0.35rem', fontSize: '0.75rem', color: '#888' }}>
-                            Pair named_keys: {pairNamedKeys.join(', ')}
-                        </div>
-                    )}
                 </div>
             )}
             
