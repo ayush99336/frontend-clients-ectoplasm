@@ -8,6 +8,7 @@ import { Approve } from './components/Approve';
 import { Liquidity } from './components/Liquidity';
 import { Swap } from './components/Swap';
 import { PairsList } from './components/PairsList';
+import { Staking } from './components/Staking';
 import { useDex } from './contexts/DexContext';
 import { ToastProvider } from './contexts/ToastContext';
 
@@ -82,6 +83,7 @@ function App() {
               <button className={activeTab === 'swap' ? 'active' : ''} onClick={() => setActiveTab('swap')}>Swap</button>
               <button className={activeTab === 'approve' ? 'active' : ''} onClick={() => setActiveTab('approve')}>Approve</button>
               <button className={activeTab === 'liquidity' ? 'active' : ''} onClick={() => setActiveTab('liquidity')}>Liquidity</button>
+              <button className={activeTab === 'staking' ? 'active' : ''} onClick={() => setActiveTab('staking')}>Staking</button>
               <button className={activeTab === 'pools' ? 'active' : ''} onClick={() => setActiveTab('pools')}>Pools</button>
               <button className={activeTab === 'mint' ? 'active' : ''} onClick={() => setActiveTab('mint')}>Mint (Test)</button>
           </div>
@@ -90,6 +92,7 @@ function App() {
               {activeTab === 'swap' && <Swap wallet={wallet} log={addLog} onSuccess={fetchBalance} />}
               {activeTab === 'approve' && <Approve wallet={wallet} log={addLog} onSuccess={fetchBalance} />}
               {activeTab === 'liquidity' && <Liquidity wallet={wallet} log={addLog} onSuccess={fetchBalance} />}
+              {activeTab === 'staking' && <Staking wallet={wallet} log={addLog} onSuccess={fetchBalance} />}
               {activeTab === 'pools' && <PairsList />}
               {activeTab === 'mint' && <Mint wallet={wallet} log={addLog} onSuccess={fetchBalance} />}
           </div>

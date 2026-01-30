@@ -35,6 +35,11 @@ const CONFIG: DexConfig = {
             contractHash: ENV.WBTC_CONTRACT_HASH || ENV.VITE_WBTC_CONTRACT_HASH || '',
             decimals: 8,
         },
+        sCSPR: {
+            packageHash: ENV.SCSPR_PACKAGE_HASH || ENV.VITE_SCSPR_PACKAGE_HASH || '',
+            contractHash: ENV.SCSPR_CONTRACT_HASH || ENV.VITE_SCSPR_CONTRACT_HASH || '',
+            decimals: 9,
+        },
     },
     pairs: {
         'WCSPR-ECTO': 'dynamic', // Placeholder

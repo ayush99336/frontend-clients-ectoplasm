@@ -19,6 +19,8 @@ export default defineConfig({
     'USDC_',
     'WETH_',
     'WBTC_',
+    'SCSPR_',
+    'STAKING_',
   ],
   server: {
     proxy: {
